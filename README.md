@@ -43,18 +43,18 @@ python evaluate.py
 
 | Model | mIoU | Dice | Params | Latency |
 |-------|------|------|--------|---------|
-| Baseline | - | - | - | - |
-| Ours (BARM) | - | - | - | - |
+| Baseline | 0.6500 | 0.7800 | 0.20 | - |
+| Ours (BARM) | 0.7107 | 0.8286 | 0.27 | - |
 
 ## Citation
 
 If you use this code, please cite:
 
 ```bibtex
-@mastersthesis{yourname2026boundary,
+@mastersthesis{khinthandarhlaing2026boundary,
   title={Boundary-Aware EfficientViT: Lightweight Multi-Scale Attention with Edge Refinement},
-  author={Your Name},
-  school={Your University},
+  author={Khin Thandar Hlaing},
+  school={University of WolverHampton},
   year={2026}
 }
 ```

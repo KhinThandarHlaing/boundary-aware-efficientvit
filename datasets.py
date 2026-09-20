@@ -38,9 +38,7 @@ class OxfordIITPetSegmentation(Dataset):
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
-        self.mask_transform = T.Compose([
-            T.Resize((image_size, image_size), interpolation=Image.NEAREST)
-        ])
+        self.mask_transform = T.Resize((image_size, image_size), interpolation=Image.NEAREST)
     
     def __len__(self):
         return len(self.dataset)
@@ -54,13 +52,17 @@ class OxfordIITPetSegmentation(Dataset):
         
         # Treat pet (1) and boundary (3) as foreground
         mask = (target_np != 2).astype(np.float32)
-        mask = torch.from_numpy(mask).unsqueeze(0)  # (1, H, W)
+        
+        # Convert to PIL Image for transform
+        mask_pil = Image.fromarray((mask * 255).astype(np.uint8))
         
         # Apply transforms
         image = self.img_transform(image)
-        mask = self.mask_transform(Image.fromarray((mask.squeeze() * 255).astype(np.uint8)))
-        mask = torch.from_numpy(np.array(mask)).float() / 255.0
-        mask = mask.unsqueeze(0)
+        mask_pil = self.mask_transform(mask_pil)
+        
+        # Convert back to tensor
+        mask = torch.from_numpy(np.array(mask_pil)).float() / 255.0
+        mask = mask.unsqueeze(0)  # (1, H, W)
         
         return image, mask
 

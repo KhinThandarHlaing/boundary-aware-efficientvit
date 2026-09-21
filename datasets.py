@@ -67,6 +67,8 @@ class OxfordIITPetSegmentation(Dataset):
         return image, mask
 
 
+# datasets.py - Cityscapes class ကို အစားထိုးပါ
+
 class CityscapesSegmentation(Dataset):
     """
     Cityscapes Dataset for multi-class semantic segmentation.
@@ -105,6 +107,7 @@ class CityscapesSegmentation(Dataset):
         self.images = []
         self.masks = []
         
+        # Correct path structure
         split_dir = "leftImg8bit/" + ("train" if split == "train" else "val")
         mask_dir = "gtFine/" + ("train" if split == "train" else "val")
         

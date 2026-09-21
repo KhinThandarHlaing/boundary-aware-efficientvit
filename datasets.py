@@ -1,107 +1,70 @@
-# ==========================================
-# datasets.py — Dataset Loading and Preprocessing
-# ==========================================
+%%writefile /content/boundary-aware-efficientvit/datasets.py
+
+import os
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
 
 import torch
 from torch.utils.data import Dataset, DataLoader
-import torchvision
-import torchvision.transforms as T
-from PIL import Image
-import numpy as np
-from pathlib import Path
-from config import cfg
-
-class OxfordIITPetSegmentation(Dataset):
-    """
-    Oxford-IIIT Pet Dataset with correct trimap handling.
-    Labels: 1=foreground, 2=background, 3=boundary
-    We treat 1 and 3 as foreground for binary segmentation.
-    """
-    
-    def __init__(self, root: str = "./data", split: str = "trainval", image_size: int = 224):
-        super().__init__()
-        self.image_size = image_size
-        self.split = split
-        
-        # Load official dataset
-        self.dataset = torchvision.datasets.OxfordIIITPet(
-            root=root,
-            split=split,
-            target_types="segmentation",
-            download=True
-        )
-        
-        # Transforms
-        self.img_transform = T.Compose([
-            T.Resize((image_size, image_size), interpolation=Image.BILINEAR),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-        
-        self.mask_transform = T.Resize((image_size, image_size), interpolation=Image.NEAREST)
-    
-    def __len__(self):
-        return len(self.dataset)
-    
-    def __getitem__(self, idx):
-        image, target = self.dataset[idx]
-        
-        # Convert trimap to binary mask
-        # 1=pet, 2=background, 3=boundary/outline
-        target_np = np.array(target, dtype=np.uint8)
-        
-        # Treat pet (1) and boundary (3) as foreground
-        mask = (target_np != 2).astype(np.float32)
-        
-        # Convert to PIL Image for transform
-        mask_pil = Image.fromarray((mask * 255).astype(np.uint8))
-        
-        # Apply transforms
-        image = self.img_transform(image)
-        mask_pil = self.mask_transform(mask_pil)
-        
-        # Convert back to tensor
-        mask = torch.from_numpy(np.array(mask_pil)).float() / 255.0
-        mask = mask.unsqueeze(0)  # (1, H, W)
-        
-        return image, mask
+from torchvision import transforms
 
 
-# datasets.py - Cityscapes class ကို အစားထိုးပါ
+# ============================================================
+# Cityscapes RGB -> class ID
+# ============================================================
+
+CITYSCAPES_COLORS = {
+    0:  (128, 64, 128),    # road
+    1:  (244, 35, 232),    # sidewalk
+    2:  (70, 70, 70),      # building
+    3:  (102, 102, 156),   # wall
+    4:  (190, 153, 153),   # fence
+    5:  (153, 153, 153),   # pole
+    6:  (250, 170, 30),    # traffic light
+    7:  (220, 220, 0),     # traffic sign
+    8:  (107, 142, 35),    # vegetation
+    9:  (152, 251, 152),   # terrain
+    10: (70, 130, 180),    # sky
+    11: (220, 20, 60),     # person
+    12: (255, 0, 0),       # rider
+    13: (0, 0, 142),       # car
+    14: (0, 0, 70),        # truck
+    15: (0, 60, 100),      # bus
+    16: (0, 80, 100),      # train
+    17: (0, 0, 230),       # motorcycle
+    18: (119, 11, 32),     # bicycle
+}
+
+CITYSCAPES_PALETTE = np.array(
+    list(CITYSCAPES_COLORS.values()),
+    dtype=np.float32
+)
+
+
+# ============================================================
+# Cityscapes Dataset
+# ============================================================
 
 class CityscapesSegmentation(Dataset):
-    """
-    Cityscapes-style segmentation dataset.
-
-    Expected structure:
-        root/
-        ├── train/
-        │   ├── img/
-        │   └── label/
-        └── val/
-            ├── img/
-            └── label/
-    """
 
     def __init__(
         self,
-        root: str = "./data/cityscapes",
-        split: str = "train",
-        image_size: int = 512
+        root="./data/cityscapes",
+        split="train",
+        image_size=512
     ):
-        super().__init__()
-
         self.root = Path(root)
         self.split = split
         self.image_size = image_size
 
-        # Correct folder structure
-        self.img_dir = self.root / split / "img"
+        self.image_dir = self.root / split / "img"
         self.label_dir = self.root / split / "label"
 
-        if not self.img_dir.exists():
+        if not self.image_dir.exists():
             raise FileNotFoundError(
-                f"Image directory not found: {self.img_dir}"
+                f"Image directory not found: {self.image_dir}"
             )
 
         if not self.label_dir.exists():
@@ -109,25 +72,29 @@ class CityscapesSegmentation(Dataset):
                 f"Label directory not found: {self.label_dir}"
             )
 
+        # ----------------------------------------------------
         # Find images
-        valid_extensions = {".jpg", ".jpeg", ".png", ".bmp"}
+        # ----------------------------------------------------
 
-        self.images = sorted([
-            p for p in self.img_dir.rglob("*")
-            if p.is_file()
-            and p.suffix.lower() in valid_extensions
-        ])
+        extensions = {".png", ".jpg", ".jpeg"}
 
-        # Find labels
-        self.labels = sorted([
-            p for p in self.label_dir.rglob("*")
-            if p.is_file()
-            and p.suffix.lower() in valid_extensions
-        ])
+        self.images = sorted(
+            [
+                p for p in self.image_dir.rglob("*")
+                if p.suffix.lower() in extensions
+            ]
+        )
+
+        self.labels = sorted(
+            [
+                p for p in self.label_dir.rglob("*")
+                if p.suffix.lower() in extensions
+            ]
+        )
 
         if len(self.images) == 0:
             raise RuntimeError(
-                f"No images found in {self.img_dir}"
+                f"No images found in {self.image_dir}"
             )
 
         if len(self.labels) == 0:
@@ -137,8 +104,8 @@ class CityscapesSegmentation(Dataset):
 
         if len(self.images) != len(self.labels):
             raise RuntimeError(
-                f"Image/label count mismatch: "
-                f"{len(self.images)} images, "
+                f"Image/label mismatch: "
+                f"{len(self.images)} images vs "
                 f"{len(self.labels)} labels"
             )
 
@@ -148,55 +115,136 @@ class CityscapesSegmentation(Dataset):
             f"{len(self.labels)} labels"
         )
 
-        # Image transformation
-        self.img_transform = T.Compose([
-            T.Resize(
+        # ----------------------------------------------------
+        # Image transform
+        # ----------------------------------------------------
+
+        self.image_transform = transforms.Compose([
+            transforms.Resize(
                 (image_size, image_size),
-                interpolation=Image.BILINEAR
+                interpolation=transforms.InterpolationMode.BILINEAR
             ),
-            T.ToTensor(),
-            T.Normalize(
+            transforms.ToTensor(),
+            transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225]
             )
         ])
 
-        # Mask transformation
-        self.mask_transform = T.Resize(
-            (image_size, image_size),
-            interpolation=Image.NEAREST
+
+    # ========================================================
+    # Convert RGB segmentation image -> class-index mask
+    # ========================================================
+
+    def rgb_to_class_mask(self, rgb_mask):
+
+        rgb_mask = rgb_mask.astype(np.float32)
+
+        h, w, _ = rgb_mask.shape
+
+        pixels = rgb_mask.reshape(-1, 3)
+
+        # Calculate squared RGB distance to each
+        # standard Cityscapes semantic color.
+        distances = (
+            (
+                pixels[:, None, :]
+                - CITYSCAPES_PALETTE[None, :, :]
+            ) ** 2
+        ).sum(axis=2)
+
+        class_ids = np.argmin(
+            distances,
+            axis=1
         )
+
+        class_mask = class_ids.reshape(h, w)
+
+        return class_mask.astype(np.int64)
+
+
+    # ========================================================
+    # Get item
+    # ========================================================
+
+    def __getitem__(self, index):
+
+        image_path = self.images[index]
+        label_path = self.labels[index]
+
+        # ----------------------------------------------------
+        # Load image
+        # ----------------------------------------------------
+
+        image = Image.open(image_path).convert("RGB")
+
+        # ----------------------------------------------------
+        # Load RGB label
+        # ----------------------------------------------------
+
+        rgb_label = np.array(
+            Image.open(label_path).convert("RGB")
+        )
+
+        # Convert RGB colors -> integer classes
+        mask = self.rgb_to_class_mask(rgb_label)
+
+        # ----------------------------------------------------
+        # Resize image
+        # ----------------------------------------------------
+
+        image = self.image_transform(image)
+
+        # ----------------------------------------------------
+        # Resize mask using NEAREST NEIGHBOR
+        # ----------------------------------------------------
+
+        mask = Image.fromarray(
+            mask.astype(np.uint8)
+        )
+
+        mask = mask.resize(
+            (self.image_size, self.image_size),
+            resample=Image.Resampling.NEAREST
+        )
+
+        mask = torch.from_numpy(
+            np.array(mask, dtype=np.int64)
+        )
+
+        return image, mask
+
 
     def __len__(self):
         return len(self.images)
 
-    def __getitem__(self, idx):
 
-        img_path = self.images[idx]
-        label_path = self.labels[idx]
+# ============================================================
+# Keep Oxford dataset if your project uses it
+# ============================================================
 
-        image = Image.open(img_path).convert("RGB")
-        mask = Image.open(label_path)
+class OxfordIITPetSegmentation(Dataset):
 
-        image = self.img_transform(image)
+    def __init__(
+        self,
+        split="trainval",
+        image_size=224
+    ):
+        raise NotImplementedError(
+            "OxfordIITPetSegmentation is not configured "
+            "in this Cityscapes experiment."
+        )
 
-        mask = self.mask_transform(mask)
 
-        mask_np = np.array(mask, dtype=np.int64)
-
-        mask_tensor = torch.from_numpy(mask_np).long()
-
-        return image, mask_tensor
-
+# ============================================================
+# DataLoaders
+# ============================================================
 
 def get_dataloaders(
-    dataset_name: str = "oxford_pet",
-    batch_size: int = 16,
-    image_size: int = 224
+    dataset_name="oxford_pet",
+    batch_size=16,
+    image_size=224
 ):
-    """
-    Create train and validation dataloaders.
-    """
 
     if dataset_name == "oxford_pet":
 

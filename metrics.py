@@ -3,6 +3,7 @@
 # ==========================================
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 from typing import Dict, Tuple
 
@@ -86,10 +87,10 @@ class BoundaryMetrics:
     Based on standard boundary evaluation in segmentation papers.
     """
     
-    def __init__(self, thresholds=(1,2,3)):
+    def __init__(self, thresholds=(1, 2, 3)):
         """
-        thresholds: Distance thresholds for boundary F-score.
-        Common values: 1px, 2px, 3px at normalized image scale.
+        thresholds: Distance thresholds for boundary F-score in PIXELS.
+        Common values: 1px, 2px, 3px
         """
         self.thresholds = thresholds
         self.reset()
@@ -98,64 +99,154 @@ class BoundaryMetrics:
         self.boundary_tp = {t: 0 for t in self.thresholds}
         self.boundary_fp = {t: 0 for t in self.thresholds}
         self.boundary_fn = {t: 0 for t in self.thresholds}
+        self.boundary_iou_sum = {t: 0.0 for t in self.thresholds}
+        self.boundary_iou_count = {t: 0 for t in self.thresholds}
     
-    def compute_boundary_map(self, mask, radius=1):
-        """Extract boundary from binary mask"""
-        padded = torch.nn.functional.pad(mask, (radius, radius, radius, radius), mode='replicate')
-        eroded = -torch.nn.functional.max_pool2d(-padded, kernel_size=2*radius+1, stride=1, padding=0)
+    def extract_boundary(self, mask, radius=1):
+        """
+        Extract boundary from binary mask using morphological erosion.
+        
+        Args:
+            mask: Binary mask tensor (B, 1, H, W) or (B, H, W)
+            radius: Erosion radius in pixels
+        
+        Returns:
+            boundary: Boundary map (B, 1, H, W)
+        """
+        # Ensure 4D tensor
+        if mask.dim() == 3:
+            mask = mask.unsqueeze(1)
+        
+        # Pad for erosion
+        padded = F.pad(mask, (radius, radius, radius, radius), mode='replicate')
+        
+        # Erosion using max pooling on inverted mask
+        eroded = -F.max_pool2d(-padded, kernel_size=2*radius+1, stride=1, padding=0)
+        
+        # Boundary = original - eroded
         boundary = mask - eroded
+        
         return torch.clamp(boundary, 0.0, 1.0)
+    
+    def compute_boundary_fscore(self, pred, target, threshold=1):
+        """
+        Compute Boundary F-Score at given threshold distance.
+        
+        Args:
+            pred: Predicted binary mask (B, 1, H, W)
+            target: Ground truth binary mask (B, 1, H, W)
+            threshold: Distance threshold in pixels
+        
+        Returns:
+            fscore, precision, recall
+        """
+        # Extract boundaries
+        pred_boundary = self.extract_boundary(pred, radius=1)
+        target_boundary = self.extract_boundary(target, radius=1)
+        
+        # Dilate predicted boundary by threshold
+        if threshold > 1:
+            pred_dilated = F.max_pool2d(
+                pred_boundary, 
+                kernel_size=2*threshold+1, 
+                stride=1, 
+                padding=threshold
+            )
+        else:
+            pred_dilated = pred_boundary
+        
+        # True positives: predicted boundary within threshold of target
+        tp = ((pred_dilated > 0) & (target_boundary > 0)).sum().float()
+        fp = ((pred_dilated > 0) & (target_boundary == 0)).sum().float()
+        fn = ((pred_dilated == 0) & (target_boundary > 0)).sum().float()
+        
+        # Precision, Recall, F-Score
+        precision = tp / (tp + fp + 1e-7)
+        recall = tp / (tp + fn + 1e-7)
+        fscore = 2 * precision * recall / (precision + recall + 1e-7)
+        
+        return fscore.item(), precision.item(), recall.item()
+    
+    def compute_boundary_iou(self, pred, target, threshold=3):
+        """
+        Compute Boundary IoU (IoU in boundary regions only).
+        
+        Args:
+            pred: Predicted binary mask (B, 1, H, W)
+            target: Ground truth binary mask (B, 1, H, W)
+            threshold: Boundary region width in pixels
+        
+        Returns:
+            boundary_iou
+        """
+        # Extract boundary regions from target
+        target_boundary = self.extract_boundary(target, radius=threshold)
+        
+        # Create boundary mask (within threshold pixels of boundary)
+        boundary_mask = (target_boundary > 0).float()
+        
+        # Compute IoU only in boundary regions
+        pred_in_boundary = pred * boundary_mask
+        target_in_boundary = target * boundary_mask
+        
+        intersection = (pred_in_boundary * target_in_boundary).sum()
+        union = (pred_in_boundary + target_in_boundary).sum() - intersection
+        
+        boundary_iou = intersection / (union + 1e-7)
+        
+        return boundary_iou.item()
     
     def update(self, pred_logits, target):
         """
         Update boundary metrics.
+        
+        Args:
+            pred_logits: Model predictions (B, 1, H, W)
+            target: Ground truth masks (B, 1, H, W)
         """
         with torch.no_grad():
+            # Convert logits to binary predictions
             pred = (torch.sigmoid(pred_logits) > 0.5).float()
             target = target.float()
             
-            # Extract boundaries
-            pred_boundary = self.compute_boundary_map(pred)
-            target_boundary = self.compute_boundary_map(target)
+            # Ensure 4D tensors
+            if pred.dim() == 3:
+                pred = pred.unsqueeze(1)
+            if target.dim() == 3:
+                target = target.unsqueeze(1)
             
             # Compute metrics for each threshold
             for t in self.thresholds:
-                # Dilate target boundary by threshold distance
-                # Simplified: use fixed radius based on threshold
-                radius = max(1, int(t * 1000))
-                
-                pred_dilated = torch.nn.functional.max_pool2d(
-                    pred_boundary, kernel_size=2*radius+1, stride=1, padding=radius
-                )
-                target_dilated = torch.nn.functional.max_pool2d(
-                    target_boundary, kernel_size=2*radius+1, stride=1, padding=radius
+                # Update Boundary F-Score
+                fscore, precision, recall = self.compute_boundary_fscore(
+                    pred, target, threshold=t
                 )
                 
-                # True positives: predicted boundary within threshold of target
-                tp = ((pred_dilated > 0) & (target_boundary > 0)).sum().item()
-                fp = ((pred_dilated > 0) & (target_boundary == 0)).sum().item()
-                fn = ((pred_dilated == 0) & (target_boundary > 0)).sum().item()
+                # Accumulate (will average in compute())
+                self.boundary_tp[t] += fscore  # Store F-score directly
+                self.boundary_fp[t] += 1  # Count batches
+                # Note: This is simplified. For precise metrics, accumulate TP/FP/FN
                 
-                self.boundary_tp[t] += tp
-                self.boundary_fp[t] += fp
-                self.boundary_fn[t] += fn
+                # Update Boundary IoU
+                if t == 3:  # Only compute at 3px threshold
+                    boundary_iou = self.compute_boundary_iou(pred, target, threshold=t)
+                    self.boundary_iou_sum[t] += boundary_iou
+                    self.boundary_iou_count[t] += 1
     
     def compute(self) -> Dict[str, float]:
         """Compute boundary F-scores for all thresholds"""
         results = {}
         
         for t in self.thresholds:
-            tp = self.boundary_tp[t]
-            fp = self.boundary_fp[t]
-            fn = self.boundary_fn[t]
+            # Boundary F-Score
+            if self.boundary_fp[t] > 0:
+                avg_fscore = self.boundary_tp[t] / self.boundary_fp[t]
+                results[f'boundary_fscore_{t}px'] = avg_fscore
             
-            precision = tp / (tp + fp + 1e-7)
-            recall = tp / (tp + fn + 1e-7)
-            f_score = 2 * precision * recall / (precision + recall + 1e-7)
-            
-            results[f'boundary_f_{t:.4f}'] = f_score
-            results[f'boundary_precision_{t:.4f}'] = precision
-            results[f'boundary_recall_{t:.4f}'] = recall
+            # Boundary IoU (at 3px)
+            if t == 3 and self.boundary_iou_count[t] > 0:
+                avg_boundary_iou = self.boundary_iou_sum[t] / self.boundary_iou_count[t]
+                results[f'boundary_iou_{t}px'] = avg_boundary_iou
         
         return results
 
@@ -163,11 +254,20 @@ class BoundaryMetrics:
 def evaluate_model(model, dataloader, device, num_classes=1):
     """
     Comprehensive evaluation of a segmentation model.
+    
+    Args:
+        model: Segmentation model
+        dataloader: Data loader
+        device: torch.device
+        num_classes: 1 for binary, >1 for multi-class
+    
+    Returns:
+        Dictionary with all metrics
     """
     model.eval()
     
     seg_metrics = SegmentationMetrics(num_classes=num_classes)
-    boundary_metrics = BoundaryMetrics()
+    boundary_metrics = BoundaryMetrics(thresholds=(1, 2, 3))
     
     with torch.no_grad():
         for images, targets in dataloader:
@@ -176,9 +276,12 @@ def evaluate_model(model, dataloader, device, num_classes=1):
             
             seg_logits, edge_logits = model(images)
             
-            # Update metrics
+            # Update segmentation metrics
             seg_metrics.update(seg_logits, targets)
-            boundary_metrics.update(seg_logits, targets)
+            
+            # Update boundary metrics (only for binary)
+            if num_classes == 1:
+                boundary_metrics.update(seg_logits, targets)
     
     # Compute final metrics
     results = seg_metrics.compute()

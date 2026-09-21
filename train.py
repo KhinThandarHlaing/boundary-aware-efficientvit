@@ -30,7 +30,7 @@ def train_epoch(model, train_loader, optimizer, criterion, device, epoch):
         
         seg_logits, edge_logits = model(images)
         
-        if cfg.num_classes == 1:
+        if cfg.num_classes == 19:
             loss = criterion(seg_logits, edge_logits, targets)
         else:
             loss = criterion(seg_logits, edge_logits, targets)

@@ -48,23 +48,62 @@ CITYSCAPES_PALETTE = np.array(
 # ============================================================
 
 class CityscapesSegmentation(Dataset):
+    """
+    Cityscapes-style segmentation dataset.
+
+    Expected structure:
+        root/
+        ├── train/
+        │   ├── img/
+        │   └── label/
+        └── val/
+            ├── img/
+            └── label/
+
+    RGB labels are converted to Cityscapes class IDs 0-18.
+    """
+
+    # Standard Cityscapes RGB colors for the 19 semantic classes
+    CITYSCAPES_COLORS = np.array([
+        [128, 64, 128],   # 0 road
+        [244, 35, 232],   # 1 sidewalk
+        [70, 70, 70],     # 2 building
+        [102, 102, 156],  # 3 wall
+        [190, 153, 153],  # 4 fence
+        [153, 153, 153],  # 5 pole
+        [250, 170, 30],   # 6 traffic light
+        [220, 220, 0],    # 7 traffic sign
+        [107, 142, 35],   # 8 vegetation
+        [152, 251, 152],  # 9 terrain
+        [70, 130, 180],   # 10 sky
+        [220, 20, 60],    # 11 person
+        [255, 0, 0],      # 12 rider
+        [0, 0, 142],      # 13 car
+        [0, 0, 70],       # 14 truck
+        [0, 60, 100],     # 15 bus
+        [0, 80, 100],     # 16 train
+        [0, 0, 230],      # 17 motorcycle
+        [119, 11, 32],    # 18 bicycle
+    ], dtype=np.float32)
 
     def __init__(
         self,
-        root="./data/cityscapes",
-        split="train",
-        image_size=512
+        root: str = "./data/cityscapes",
+        split: str = "train",
+        image_size: int = 512
     ):
+        super().__init__()
+
         self.root = Path(root)
         self.split = split
         self.image_size = image_size
 
-        self.image_dir = self.root / split / "img"
+        self.img_dir = self.root / split / "img"
         self.label_dir = self.root / split / "label"
 
-        if not self.image_dir.exists():
+        if not self.img_dir.exists():
             raise FileNotFoundError(
-                f"Image directory not found: {self.image_dir}"
+                f"Image directory not found: {self.img_dir}"
             )
 
         if not self.label_dir.exists():
@@ -72,29 +111,23 @@ class CityscapesSegmentation(Dataset):
                 f"Label directory not found: {self.label_dir}"
             )
 
-        # ----------------------------------------------------
-        # Find images
-        # ----------------------------------------------------
+        valid_extensions = {".jpg", ".jpeg", ".png", ".bmp"}
 
-        extensions = {".png", ".jpg", ".jpeg"}
+        self.images = sorted([
+            p for p in self.img_dir.rglob("*")
+            if p.is_file()
+            and p.suffix.lower() in valid_extensions
+        ])
 
-        self.images = sorted(
-            [
-                p for p in self.image_dir.rglob("*")
-                if p.suffix.lower() in extensions
-            ]
-        )
-
-        self.labels = sorted(
-            [
-                p for p in self.label_dir.rglob("*")
-                if p.suffix.lower() in extensions
-            ]
-        )
+        self.labels = sorted([
+            p for p in self.label_dir.rglob("*")
+            if p.is_file()
+            and p.suffix.lower() in valid_extensions
+        ])
 
         if len(self.images) == 0:
             raise RuntimeError(
-                f"No images found in {self.image_dir}"
+                f"No images found in {self.img_dir}"
             )
 
         if len(self.labels) == 0:
@@ -104,8 +137,8 @@ class CityscapesSegmentation(Dataset):
 
         if len(self.images) != len(self.labels):
             raise RuntimeError(
-                f"Image/label mismatch: "
-                f"{len(self.images)} images vs "
+                f"Image/label count mismatch: "
+                f"{len(self.images)} images, "
                 f"{len(self.labels)} labels"
             )
 
@@ -115,125 +148,82 @@ class CityscapesSegmentation(Dataset):
             f"{len(self.labels)} labels"
         )
 
-        # ----------------------------------------------------
-        # Image transform
-        # ----------------------------------------------------
-
-        self.image_transform = transforms.Compose([
-            transforms.Resize(
+        self.img_transform = T.Compose([
+            T.Resize(
                 (image_size, image_size),
-                interpolation=transforms.InterpolationMode.BILINEAR
+                interpolation=Image.BILINEAR
             ),
-            transforms.ToTensor(),
-            transforms.Normalize(
+            T.ToTensor(),
+            T.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225]
             )
         ])
 
-
-    # ========================================================
-    # Convert RGB segmentation image -> class-index mask
-    # ========================================================
-
-    def rgb_to_class_mask(self, rgb_mask):
-
-        rgb_mask = rgb_mask.astype(np.float32)
-
-        h, w, _ = rgb_mask.shape
-
-        pixels = rgb_mask.reshape(-1, 3)
-
-        # Calculate squared RGB distance to each
-        # standard Cityscapes semantic color.
-        distances = (
-            (
-                pixels[:, None, :]
-                - CITYSCAPES_PALETTE[None, :, :]
-            ) ** 2
-        ).sum(axis=2)
-
-        class_ids = np.argmin(
-            distances,
-            axis=1
+        self.mask_transform = T.Resize(
+            (image_size, image_size),
+            interpolation=Image.NEAREST
         )
-
-        class_mask = class_ids.reshape(h, w)
-
-        return class_mask.astype(np.int64)
-
-
-    # ========================================================
-    # Get item
-    # ========================================================
-
-    def __getitem__(self, index):
-
-        image_path = self.images[index]
-        label_path = self.labels[index]
-
-        # ----------------------------------------------------
-        # Load image
-        # ----------------------------------------------------
-
-        image = Image.open(image_path).convert("RGB")
-
-        # ----------------------------------------------------
-        # Load RGB label
-        # ----------------------------------------------------
-
-        rgb_label = np.array(
-            Image.open(label_path).convert("RGB")
-        )
-
-        # Convert RGB colors -> integer classes
-        mask = self.rgb_to_class_mask(rgb_label)
-
-        # ----------------------------------------------------
-        # Resize image
-        # ----------------------------------------------------
-
-        image = self.image_transform(image)
-
-        # ----------------------------------------------------
-        # Resize mask using NEAREST NEIGHBOR
-        # ----------------------------------------------------
-
-        mask = Image.fromarray(
-            mask.astype(np.uint8)
-        )
-
-        mask = mask.resize(
-            (self.image_size, self.image_size),
-            resample=Image.Resampling.NEAREST
-        )
-
-        mask = torch.from_numpy(
-            np.array(mask, dtype=np.int64)
-        )
-
-        return image, mask
-
 
     def __len__(self):
         return len(self.images)
 
+    def rgb_to_class_mask(self, mask_rgb):
+        """
+        Convert RGB semantic mask into class IDs 0-18.
 
-# ============================================================
-# Keep Oxford dataset if your project uses it
-# ============================================================
+        Each RGB pixel is assigned to the nearest
+        standard Cityscapes class color.
+        """
 
-class OxfordIITPetSegmentation(Dataset):
+        # [H, W, 3]
+        pixels = mask_rgb.reshape(-1, 3).astype(np.float32)
 
-    def __init__(
-        self,
-        split="trainval",
-        image_size=224
-    ):
-        raise NotImplementedError(
-            "OxfordIITPetSegmentation is not configured "
-            "in this Cityscapes experiment."
+        # Calculate squared Euclidean distance:
+        # [N, 1, 3] - [1, 19, 3]
+        distances = np.sum(
+            (pixels[:, None, :] -
+             self.CITYSCAPES_COLORS[None, :, :]) ** 2,
+            axis=2
         )
+
+        # Nearest Cityscapes color
+        class_ids = np.argmin(distances, axis=1)
+
+        # Restore image shape
+        class_ids = class_ids.reshape(
+            mask_rgb.shape[0],
+            mask_rgb.shape[1]
+        )
+
+        return class_ids.astype(np.int64)
+
+    def __getitem__(self, idx):
+
+        img_path = self.images[idx]
+        label_path = self.labels[idx]
+
+        # Load image
+        image = Image.open(img_path).convert("RGB")
+
+        # Load RGB label
+        mask = Image.open(label_path).convert("RGB")
+
+        # Resize image
+        image = self.img_transform(image)
+
+        # Resize RGB mask using NEAREST
+        mask = self.mask_transform(mask)
+
+        # RGB -> class IDs
+        mask_np = np.array(mask, dtype=np.uint8)
+
+        mask_np = self.rgb_to_class_mask(mask_np)
+
+        # [H,W] int64 tensor
+        mask_tensor = torch.from_numpy(mask_np).long()
+
+        return image, mask_tensor
 
 
 # ============================================================

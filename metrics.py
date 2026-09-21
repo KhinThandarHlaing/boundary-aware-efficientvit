@@ -86,7 +86,7 @@ class BoundaryMetrics:
     Based on standard boundary evaluation in segmentation papers.
     """
     
-    def __init__(self, thresholds=(0.0003, 0.0006, 0.0009)):
+    def __init__(self, thresholds=(1,2,3)):
         """
         thresholds: Distance thresholds for boundary F-score.
         Common values: 1px, 2px, 3px at normalized image scale.

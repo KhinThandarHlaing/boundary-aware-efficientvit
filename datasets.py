@@ -189,29 +189,46 @@ class CityscapesSegmentation(Dataset):
         return image, mask_tensor
 
 
-def get_dataloaders(dataset_name: str = "oxford_pet", batch_size: int = 16, image_size: int = 224):
+def get_dataloaders(
+    dataset_name: str = "oxford_pet",
+    batch_size: int = 16,
+    image_size: int = 224
+):
     """
     Create train and validation dataloaders.
     """
+
     if dataset_name == "oxford_pet":
-        train_dataset = OxfordIITPetSegmentation(split="trainval", image_size=image_size)
-        val_dataset = OxfordIITPetSegmentation(split="test", image_size=image_size)
+
+        train_dataset = OxfordIITPetSegmentation(
+            split="trainval",
+            image_size=image_size
+        )
+
+        val_dataset = OxfordIITPetSegmentation(
+            split="test",
+            image_size=image_size
+        )
+
     elif dataset_name == "cityscapes":
 
-    train_dataset = CityscapesSegmentation(
-        root="./data/cityscapes",
-        split="train",
-        image_size=image_size
-    )
+        train_dataset = CityscapesSegmentation(
+            root="./data/cityscapes",
+            split="train",
+            image_size=image_size
+        )
 
-    val_dataset = CityscapesSegmentation(
-        root="./data/cityscapes",
-        split="val",
-        image_size=image_size
-    )
+        val_dataset = CityscapesSegmentation(
+            root="./data/cityscapes",
+            split="val",
+            image_size=image_size
+        )
+
     else:
-        raise ValueError(f"Unknown dataset: {dataset_name}")
-    
+        raise ValueError(
+            f"Unknown dataset: {dataset_name}"
+        )
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -219,7 +236,7 @@ def get_dataloaders(dataset_name: str = "oxford_pet", batch_size: int = 16, imag
         num_workers=2,
         pin_memory=True
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
@@ -227,5 +244,10 @@ def get_dataloaders(dataset_name: str = "oxford_pet", batch_size: int = 16, imag
         num_workers=2,
         pin_memory=True
     )
-    
-    return train_loader, val_loader, len(train_dataset), len(val_dataset)
+
+    return (
+        train_loader,
+        val_loader,
+        len(train_dataset),
+        len(val_dataset)
+    )

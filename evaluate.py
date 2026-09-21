@@ -10,7 +10,7 @@ import json
 from config import cfg
 from datasets import get_dataloaders
 from models.barm_efficientvit import BoundaryAwareEfficientViT
-from metrics import evaluate_model
+from metrics import evaluate_model, SegmentationMetrics, BoundaryMetrics
 
 
 def measure_latency(model, device, input_size=(1, 3, 224, 224), warmup=10, iterations=50):
@@ -44,12 +44,46 @@ def measure_latency(model, device, input_size=(1, 3, 224, 224), warmup=10, itera
     return latency_ms
 
 
+def evaluate_single_model(model, dataloader, device, num_classes=1, model_name="Model"):
+    """
+    Evaluate a single model and return results.
+    """
+    model.eval()
+    
+    seg_metrics = SegmentationMetrics(num_classes=num_classes)
+    boundary_metrics = BoundaryMetrics(thresholds=(1, 2, 3))
+    
+    with torch.no_grad():
+        for images, targets in dataloader:
+            images, targets = images.to(device), targets.to(device)
+            
+            seg_logits, edge_logits = model(images)
+            
+            # Update segmentation metrics
+            seg_metrics.update(seg_logits, targets)
+            
+            # Update boundary metrics (only for binary)
+            if num_classes == 1:
+                boundary_metrics.update(seg_logits, targets)
+    
+    # Compute final metrics
+    results = seg_metrics.compute()
+    results.update(boundary_metrics.compute())
+    
+    return results
+
+
 def main():
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # Load model
-    checkpoint_path = Path(cfg.checkpoint_dir) / "best_model.pth"
+    checkpoint_path = Path(cfg.checkpoint_dir) / "best.pth"  # Fixed: best.pth not best_model.pth
+    
+    if not checkpoint_path.exists():
+        print(f"Error: Checkpoint not found at {checkpoint_path}")
+        print("Please train the model first using train.py")
+        return
     
     model = BoundaryAwareEfficientViT(
         variant=cfg.efficientvit_variant,
@@ -57,21 +91,21 @@ def main():
         use_barm=cfg.use_barm
     )
     
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     
     print(f"Loaded checkpoint from epoch {checkpoint['epoch']} with mIoU {checkpoint['miou']:.4f}")
     
     # Dataloaders
-    _, val_loader, _, _ = get_dataloaders(
+    _, val_loader, _, val_size = get_dataloaders(
         dataset_name=cfg.dataset_name,
         batch_size=cfg.batch_size,
         image_size=cfg.image_size
     )
     
     # Evaluate
-    print("Evaluating model...")
+    print("\nEvaluating model...")
     results = evaluate_model(model, val_loader, device, num_classes=cfg.num_classes)
     
     # Measure latency
@@ -89,29 +123,10 @@ def main():
     print(f"Model: Boundary-Aware EfficientViT-{cfg.efficientvit_variant}")
     print(f"Parameters: {num_params:.2f}M")
     print(f"Latency: {latency:.2f} ms")
+    print(f"Validation samples: {val_size}")
     print("-"*60)
     
-    for key, value in results.items():
-        if isinstance(value, float):
-            print(f"{key}: {value:.4f}")
-    
-    print("="*60)
-    
-    # Save results
-    output_path = Path(cfg.log_dir) / "evaluation_results.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(output_path, 'w') as f:
-        json.dump({
-            'dataset': cfg.dataset_name,
-            'model': f"BA-EfficientViT-{cfg.efficientvit_variant}",
-            'parameters_m': num_params,
-            'latency_ms': latency,
-            'metrics': results
-        }, f, indent=2)
-    
-    print(f"Results saved to {output_path}")
-
-
-if __name__ == "__main__":
-    main()
+    # Print metrics
+    print("\nSegmentation Metrics:")
+    if cfg.num_classes == 1:
+        print(f"  IoU: {results.get('iou', 0):.4f} ({results.get('iou',

@@ -71,84 +71,121 @@ class OxfordIITPetSegmentation(Dataset):
 
 class CityscapesSegmentation(Dataset):
     """
-    Cityscapes Dataset for multi-class semantic segmentation.
-    Uses fine annotations and 19 classes.
+    Cityscapes-style segmentation dataset.
+
+    Expected structure:
+        root/
+        ├── train/
+        │   ├── img/
+        │   └── label/
+        └── val/
+            ├── img/
+            └── label/
     """
-    
-    def __init__(self, root: str = "./data/cityscapes", split: str = "train", image_size: int = 512):
+
+    def __init__(
+        self,
+        root: str = "./data/cityscapes",
+        split: str = "train",
+        image_size: int = 512
+    ):
         super().__init__()
-        self.image_size = image_size
-        self.split = split
+
         self.root = Path(root)
-        
-        # Cityscapes class mapping (19 classes)
-        self.class_mapping = {
-            6: 0,   # road
-            7: 1,   # sidewalk
-            8: 2,   # building
-            11: 3,  # wall
-            12: 4,  # fence
-            13: 5,  # pole
-            17: 6,  # traffic light
-            19: 7,  # traffic sign
-            20: 8,  # vegetation
-            21: 9,  # terrain
-            22: 10, # sky
-            23: 11, # person
-            24: 12, # rider
-            25: 13, # car
-            26: 14, # truck
-            27: 15, # bus
-            28: 16, # train
-            31: 17, # motorcycle
-            32: 18  # bicycle
-        }
-        
-        self.images = []
-        self.masks = []
-        
-        # Correct path structure
-        split_dir = "leftImg8bit/" + ("train" if split == "train" else "val")
-        mask_dir = "gtFine/" + ("train" if split == "train" else "val")
-        
-        for img_path in (self.root / split_dir).glob("*/*_leftImg8bit.png"):
-            self.images.append(img_path)
-            # Corresponding mask
-            mask_path = self.root / mask_dir / img_path.parent.name / img_path.name.replace("_leftImg8bit", "_gtFine_labelIds")
-            self.masks.append(mask_path)
-        
-        # Transforms
+        self.split = split
+        self.image_size = image_size
+
+        # Correct folder structure
+        self.img_dir = self.root / split / "img"
+        self.label_dir = self.root / split / "label"
+
+        if not self.img_dir.exists():
+            raise FileNotFoundError(
+                f"Image directory not found: {self.img_dir}"
+            )
+
+        if not self.label_dir.exists():
+            raise FileNotFoundError(
+                f"Label directory not found: {self.label_dir}"
+            )
+
+        # Find images
+        valid_extensions = {".jpg", ".jpeg", ".png", ".bmp"}
+
+        self.images = sorted([
+            p for p in self.img_dir.rglob("*")
+            if p.is_file()
+            and p.suffix.lower() in valid_extensions
+        ])
+
+        # Find labels
+        self.labels = sorted([
+            p for p in self.label_dir.rglob("*")
+            if p.is_file()
+            and p.suffix.lower() in valid_extensions
+        ])
+
+        if len(self.images) == 0:
+            raise RuntimeError(
+                f"No images found in {self.img_dir}"
+            )
+
+        if len(self.labels) == 0:
+            raise RuntimeError(
+                f"No labels found in {self.label_dir}"
+            )
+
+        if len(self.images) != len(self.labels):
+            raise RuntimeError(
+                f"Image/label count mismatch: "
+                f"{len(self.images)} images, "
+                f"{len(self.labels)} labels"
+            )
+
+        print(
+            f"{split}: "
+            f"{len(self.images)} images, "
+            f"{len(self.labels)} labels"
+        )
+
+        # Image transformation
         self.img_transform = T.Compose([
-            T.Resize((image_size, image_size), interpolation=Image.BILINEAR),
+            T.Resize(
+                (image_size, image_size),
+                interpolation=Image.BILINEAR
+            ),
             T.ToTensor(),
-            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            T.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
         ])
-        
-        self.mask_transform = T.Compose([
-            T.Resize((image_size, image_size), interpolation=Image.NEAREST)
-        ])
-    
+
+        # Mask transformation
+        self.mask_transform = T.Resize(
+            (image_size, image_size),
+            interpolation=Image.NEAREST
+        )
+
     def __len__(self):
         return len(self.images)
-    
+
     def __getitem__(self, idx):
+
         img_path = self.images[idx]
-        mask_path = self.masks[idx]
-        
+        label_path = self.labels[idx]
+
         image = Image.open(img_path).convert("RGB")
-        mask = Image.open(mask_path)
-        
-        # Apply transforms
+        mask = Image.open(label_path)
+
         image = self.img_transform(image)
-        mask_np = np.array(self.mask_transform(mask), dtype=np.int64)
-        
-        # Remap to 19 classes
-        remapped = np.zeros_like(mask_np, dtype=np.int64)
-        for cityscapes_id, class_id in self.class_mapping.items():
-            remapped[mask_np == cityscapes_id] = class_id
-        
-        mask_tensor = torch.from_numpy(remapped).long()
-        
+
+        mask = self.mask_transform(mask)
+
+        mask_np = np.array(mask, dtype=np.int64)
+
+        mask_tensor = torch.from_numpy(mask_np).long()
+
         return image, mask_tensor
 
 
@@ -160,8 +197,18 @@ def get_dataloaders(dataset_name: str = "oxford_pet", batch_size: int = 16, imag
         train_dataset = OxfordIITPetSegmentation(split="trainval", image_size=image_size)
         val_dataset = OxfordIITPetSegmentation(split="test", image_size=image_size)
     elif dataset_name == "cityscapes":
-        train_dataset = CityscapesSegmentation(split="train", image_size=image_size)
-        val_dataset = CityscapesSegmentation(split="val", image_size=image_size)
+
+    train_dataset = CityscapesSegmentation(
+        root="./data/cityscapes",
+        split="train",
+        image_size=image_size
+    )
+
+    val_dataset = CityscapesSegmentation(
+        root="./data/cityscapes",
+        split="val",
+        image_size=image_size
+    )
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
     

@@ -9,16 +9,16 @@ from typing import Tuple
 class ExperimentConfig:
     # Dataset
     dataset_name: str = "oxford_pet"  # "oxford_pet" or "cityscapes"
-    image_size: int = 224
-    num_classes: int = 1  # Binary segmentation
+    image_size: int = 224  # 224 for Oxford, 512 for Cityscapes
+    num_classes: int = 1  # 1 for Oxford, 19 for Cityscapes
     
     # Model
     use_barm: bool = True
     efficientvit_variant: str = "b0"  # "b0", "b1", "b2", "b3"
     
     # Training
-    batch_size: int = 16
-    epochs: int = 50
+    batch_size: int = 8  # Reduced for memory
+    epochs: int = 30
     learning_rate: float = 3e-4
     weight_decay: float = 1e-4
     edge_loss_weight: float = 0.4
@@ -32,7 +32,7 @@ class ExperimentConfig:
     log_dir: str = "./logs"
     
     # Evaluation
-    boundary_thresholds: Tuple[float, ...] = (0.0003, 0.0006, 0.0009)  # 1, 2, 3 pixels
+    boundary_thresholds: Tuple[float, ...] = (1, 2, 3)
 
 # Create config instance
 cfg = ExperimentConfig()
